@@ -193,6 +193,8 @@ CORS_ALLOWED_ORIGINS = [
     "http://food-xi-ochre.vercel.app",
     "https://semifitted-neymar-granular.ngrok-free.dev",
     "http://localhost:3000",
+    "https://foodcourt-moi.vercel.app",
+    "http://foodcourt-moi.vercel.app",
     "http://localhost:8000",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8000",
