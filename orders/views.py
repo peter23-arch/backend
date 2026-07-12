@@ -23,22 +23,20 @@ class PlaceOrderView(APIView):
             order = serializer.save(customer=request.user)
             order_data = OrderSerializer(order, context={'request': request}).data
 
-            # # Send real-time notification to the restaurant manager
-            # channel_layer = get_channel_layer()
-            # async_to_sync(channel_layer.group_send)(
-            #     f'restaurant_{order.restaurant.id}_manager',
-            #     {
-            #         'type': 'new_order',
-            #         'message': {
-            #             'type': 'NEW_ORDER',
-            #             'order': order_data,
-            #         }
-            #     }
-            # )
-            # Inside PlaceOrderView.post — add after the channel_layer group_send block
+            # Send real-time notification to the restaurant manager
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'restaurant_{order.restaurant.id}_manager',
+                {
+                    'type': 'new_order',
+                    'message': {
+                        'type': 'NEW_ORDER',
+                        'order': order_data,
+                    }
+                }
+            )
 
-            # Push notification to restaurant manager
-            
+            # Push notification to restaurant manager (works even if browser tab is closed)
             manager = order.restaurant.manager
             if manager.fcm_token:
                 send_push_notification(
@@ -68,7 +66,6 @@ class OrderDetailView(APIView):
 
     def get(self, request, pk):
         order = get_object_or_404(Order, pk=pk)
-        # Only the customer or the restaurant manager can see this order
         if order.customer != request.user and order.restaurant.manager != request.user and not request.user.is_platform_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         serializer = OrderSerializer(order, context={'request': request})
@@ -82,7 +79,6 @@ class UpdateOrderStatusView(APIView):
     def patch(self, request, pk):
         order = get_object_or_404(Order, pk=pk)
 
-        # Only restaurant manager or admin can update status
         if order.restaurant.manager != request.user and not request.user.is_platform_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -98,19 +94,19 @@ class UpdateOrderStatusView(APIView):
         order_data = OrderSerializer(order, context={'request': request}).data
 
         # Notify the customer that their order status changed
-        # channel_layer = get_channel_layer()
-        # async_to_sync(channel_layer.group_send)(
-        #     f'user_{order.customer.id}',
-        #     {
-        #         'type': 'order_update',
-        #         'message': {
-        #             'type': 'ORDER_STATUS_UPDATE',
-        #             'order': order_data,
-        #         }
-        #     }
-        # )
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'user_{order.customer.id}',
+            {
+                'type': 'order_update',
+                'message': {
+                    'type': 'ORDER_STATUS_UPDATE',
+                    'order': order_data,
+                }
+            }
+        )
+
         # Push notification to customer
-            
         customer = order.customer
         if customer.fcm_token:
             send_push_notification(

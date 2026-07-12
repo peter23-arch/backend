@@ -1,6 +1,15 @@
-# backend/asgi.py — Simplified without WebSockets
+# backend/asgi.py
 import os
-from django.core.asgi import get_asgi_application
+import django
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
-application = get_asgi_application()
+django.setup()
+
+from channels.routing import ProtocolTypeRouter, URLRouter
+from django.core.asgi import get_asgi_application
+from notifications.routing import websocket_urlpatterns
+
+application = ProtocolTypeRouter({
+    "http": get_asgi_application(),
+    "websocket": URLRouter(websocket_urlpatterns),
+})

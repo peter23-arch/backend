@@ -1,14 +1,12 @@
-# menu/views.py — Menu item CRUD (without Channels)
+# menu/views.py — Menu item CRUD
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
-# REMOVE these imports
-# from channels.layers import get_channel_layer
-# from asgiref.sync import async_to_sync
-import json
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 from notifications.firebase import send_push_to_multiple
 from django.contrib.auth import get_user_model
 
@@ -29,7 +27,6 @@ class MenuListView(APIView):
         return [IsAuthenticated()]
 
     def get(self, request, restaurant_id):
-        # Optional search
         search = request.query_params.get('search', '')
         items = MenuItem.objects.filter(restaurant_id=restaurant_id)
         if search:
@@ -40,14 +37,29 @@ class MenuListView(APIView):
     def post(self, request, restaurant_id):
         restaurant = get_object_or_404(Restaurant, pk=restaurant_id)
 
-        # Only the manager of this restaurant can add items
         if restaurant.manager != request.user:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = MenuItemCreateSerializer(data=request.data)
         if serializer.is_valid():
             item = serializer.save(restaurant=restaurant)
+            item_data = MenuItemSerializer(item, context={'request': request}).data
 
+            # Broadcast instantly to anyone currently viewing this restaurant's page
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'restaurant_{restaurant_id}',
+                {
+                    'type': 'menu_update',
+                    'message': {
+                        'type': 'NEW_MENU_ITEM',
+                        'restaurant_name': restaurant.name,
+                        'item': item_data,
+                    }
+                }
+            )
+
+            # Also push-notify customers who aren't currently on the site
             User = get_user_model()
             customer_tokens = list(
                 User.objects.filter(
@@ -62,12 +74,8 @@ class MenuListView(APIView):
                     body=f'{item.name} is now available!',
                     data={'type': 'NEW_MENU_ITEM', 'restaurant_id': str(restaurant_id)},
                 )
-                
 
-            return Response(
-                MenuItemSerializer(item, context={'request': request}).data,
-                status=status.HTTP_201_CREATED
-            )
+            return Response(item_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
