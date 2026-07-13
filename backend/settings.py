@@ -35,6 +35,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://food-xi-ochre.vercel.app",
     "https://food-xi-ochre.vercel.app",
     "http://localhost:5173/",
+    "http://localhost:8081",
     "http://localhost:5174",
     "https://foodcourt-production.up.railway.app",
 ]
@@ -205,6 +206,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://foodcourt-moi.vercel.app",
     "http://foodcourt-moi.vercel.app",
     "http://localhost:8000",
+    "http://localhost:8081",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:8000",
     "http://localhost:5173",
@@ -259,6 +261,6 @@ FIREBASE_CLIENT_EMAIL = os.environ.get('FIREBASE_CLIENT_EMAIL')
 FIREBASE_CLIENT_ID = os.environ.get('FIREBASE_CLIENT_ID')
 FIREBASE_CLIENT_CERT_URL = os.environ.get('FIREBASE_CLIENT_CERT_URL')
 # Frontend URL — used in password reset emails
-FRONTEND_URL = config('FRONTEND_URL', default='https://food-xi-ochre.vercel.app')
+FRONTEND_URL = config('FRONTEND_URL', default='https://foodcourt-moi.vercel.app')
 # ADMIN_SETUP_KEY = config('ADMIN_SETUP_KEY', default='PETERPRAISE')
 ADMIN_SETUP_KEY = 'PETERPRAISE'

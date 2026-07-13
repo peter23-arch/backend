@@ -76,7 +76,7 @@ def send_push_notification(token, title, body, data=None):
                     vibrate=[200, 100, 200],
                 ),
                 fcm_options=messaging.WebpushFCMOptions(
-                    link='https://food-xi-ochre.vercel.app/'
+                    link='https://foodcourt-moi.vercel.app/'
                 ),
             ),
         )
@@ -123,7 +123,7 @@ def send_push_to_multiple(tokens, title, body, data=None):
                         vibrate=[200, 100, 200],
                     ),
                     fcm_options=messaging.WebpushFCMOptions(
-                        link='https://food-xi-ochre.vercel.app/'
+                        link='https://foodcourt-moi.vercel.app/'
                     ),
                 ),
             )
