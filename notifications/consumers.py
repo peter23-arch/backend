@@ -60,6 +60,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def menu_update(self, event):
         await self.send(text_data=json.dumps(event['message']))
+    async def new_review(self, event):
+        await self.send(text_data=json.dumps(event['message']))
 
     @database_sync_to_async
     def get_user_from_token(self, token):

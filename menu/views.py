@@ -102,7 +102,7 @@ class MenuItemDetailView(APIView):
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         item.delete()
-        return Response({'message': 'Item deleted'}, status=status.HTTP_204_NO_CONTENT)
+        return Response({'message': 'Item deleted'}, status=status.HTTP_200_OK)
 
 
 class MenuAvailabilityView(APIView):

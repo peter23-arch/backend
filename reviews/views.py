@@ -5,6 +5,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+from notifications.firebase import send_push_notification
 from .models import Review
 from .serializers import ReviewSerializer, ReviewCreateSerializer
 from restaurants.models import Restaurant
@@ -24,7 +27,6 @@ class RestaurantReviewsView(APIView):
         return Response(serializer.data)
 
     def post(self, request, restaurant_id):
-        # Check if user already reviewed this restaurant
         existing = Review.objects.filter(customer=request.user, restaurant_id=restaurant_id).first()
         if existing:
             return Response({'error': 'You have already reviewed this restaurant.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -35,5 +37,33 @@ class RestaurantReviewsView(APIView):
         serializer = ReviewCreateSerializer(data=data)
         if serializer.is_valid():
             review = serializer.save(customer=request.user)
-            return Response(ReviewSerializer(review).data, status=status.HTTP_201_CREATED)
+            restaurant = get_object_or_404(Restaurant, pk=restaurant_id)
+            review_data = ReviewSerializer(review).data
+
+            # Live update if the manager currently has the app open
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'restaurant_{restaurant.id}_manager',
+                {
+                    'type': 'new_review',
+                    'message': {
+                        'type': 'NEW_REVIEW',
+                        'review': review_data,
+                        'restaurant_id': restaurant.id,
+                    }
+                }
+            )
+
+            # Push notification even if the manager's app is closed
+            manager = restaurant.manager
+            if manager.fcm_token:
+                preview = (review.comment[:80] + '…') if review.comment and len(review.comment) > 80 else (review.comment or 'No comment left')
+                send_push_notification(
+                    token=manager.fcm_token,
+                    title=f'⭐ New Review — {restaurant.name}',
+                    body=f'{review.rating}/5 — {preview}',
+                    data={'type': 'NEW_REVIEW', 'restaurant_id': str(restaurant.id)},
+                )
+
+            return Response(review_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
