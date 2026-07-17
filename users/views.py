@@ -1,7 +1,5 @@
 # users/views.py — Authentication views
 
-
-
 import uuid
 # At the top of users/views.py
 
@@ -15,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.throttling import ScopedRateThrottle
 from django.contrib.auth import get_user_model
 from .serializers import (
     UserRegistrationSerializer,
@@ -22,10 +21,18 @@ from .serializers import (
     UserUpdateSerializer,
     ChangePasswordSerializer,
 )
+from rest_framework.pagination import PageNumberPagination
 
 User = get_user_model()
 
 import json
+
+
+class UsersPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
 
 class GoogleAuthView(APIView):
     """Login or register customer using Google ID token"""
@@ -34,13 +41,13 @@ class GoogleAuthView(APIView):
     def post(self, request):
         # Get the token from request
         id_token = request.data.get('id_token', '').strip()
-        
+
         # Log for debugging
         print(f"📥 Received token: {id_token[:50] if id_token else 'None'}...")
-        
+
         if not id_token:
             return Response(
-                {'error': 'Google ID token is required.'}, 
+                {'error': 'Google ID token is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -54,10 +61,10 @@ class GoogleAuthView(APIView):
         try:
             # Verify the token with Firebase
             decoded = auth.verify_id_token(id_token)
-            
+
             # Log success
             print(f"✅ Token verified for: {decoded.get('email')}")
-            
+
         except auth.InvalidIdTokenError as e:
             print(f"❌ Invalid token: {e}")
             return Response(
@@ -80,7 +87,7 @@ class GoogleAuthView(APIView):
         email = decoded.get('email')
         if not email:
             return Response(
-                {'error': 'Google account email is required.'}, 
+                {'error': 'Google account email is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -89,7 +96,7 @@ class GoogleAuthView(APIView):
         phone = decoded.get('phone_number', '') or ''
 
         user = User.objects.filter(email__iexact=email).first()
-        
+
         if user and user.role != 'customer':
             return Response(
                 {'error': 'This account is not allowed to sign in with customer Google auth.'},
@@ -129,15 +136,16 @@ class GoogleAuthView(APIView):
                 print(f"✅ Updated user: {email}")
 
         refresh = RefreshToken.for_user(user)
-        
+
         response_data = {
             'user': UserSerializer(user, context={'request': request}).data,
             'access': str(refresh.access_token),
             'refresh': str(refresh),
         }
-        
+
         print(f"✅ Google login successful for: {email}")
         return Response(response_data, status=status.HTTP_200_OK)
+
 
 def _split_name(display_name):
     name = (display_name or '').strip()
@@ -194,16 +202,16 @@ class RegisterManagerView(APIView):
                 {'error': 'Only platform admin can register restaurant managers.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Debug: Print the received data
         print("Received data:", request.data)
-        
+
         data = request.data.copy()
         data['role'] = 'restaurant_manager'
-        
+
         # Debug: Print the data being sent to serializer
         print("Data for serializer:", data)
-        
+
         serializer = UserRegistrationSerializer(data=data)
         if serializer.is_valid():
             user = serializer.save()
@@ -213,10 +221,12 @@ class RegisterManagerView(APIView):
                 'plain_password': plain_password,
                 'login_email': user.email,
             }, status=status.HTTP_201_CREATED)
-        
+
         # Debug: Print the validation errors
         print("Serializer errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class PlatformAdminSetupView(APIView):
     """
     Used once for initial platform admin registration.
@@ -249,8 +259,10 @@ class PlatformAdminSetupView(APIView):
 
 
 class LoginView(APIView):
-    """Login with email or username and password"""
+    """Login with email or username and password — throttled against brute force"""
     permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
     def post(self, request):
         identifier = request.data.get('identifier', '').strip()
@@ -295,76 +307,6 @@ class LoginView(APIView):
             'access': str(refresh.access_token),
             'refresh': str(refresh),
         })
-
-
-class GoogleAuthView(APIView):
-    """Login or register customer using Google ID token"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        id_token = request.data.get('id_token', '').strip()
-        if not id_token:
-            return Response({'error': 'Google ID token is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not firebase_admin._apps:
-            return Response(
-                {'error': 'Google sign-in is not configured on the server.'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        try:
-            decoded = auth.verify_id_token(id_token)
-        except Exception:
-            return Response({'error': 'Invalid Google token.'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        email = decoded.get('email')
-        if not email:
-            return Response({'error': 'Google account email is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        first_name, last_name = _split_name(decoded.get('name', ''))
-        phone = decoded.get('phone_number', '') or ''
-
-        user = User.objects.filter(email__iexact=email).first()
-        if user and user.role != 'customer':
-            return Response(
-                {'error': 'This account is not allowed to sign in with customer Google auth.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        if not user:
-            generated_password = str(uuid.uuid4())
-            serializer = UserRegistrationSerializer(data={
-                'email': email,
-                'first_name': first_name,
-                'last_name': last_name,
-                'phone': phone,
-                'role': 'customer',
-                'password': generated_password,
-                'password_confirm': generated_password,
-            })
-            if not serializer.is_valid():
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            user = serializer.save()
-        else:
-            updated_fields = []
-            if first_name and not user.first_name:
-                user.first_name = first_name
-                updated_fields.append('first_name')
-            if last_name and not user.last_name:
-                user.last_name = last_name
-                updated_fields.append('last_name')
-            if phone and not user.phone:
-                user.phone = phone
-                updated_fields.append('phone')
-            if updated_fields:
-                user.save(update_fields=updated_fields)
-
-        refresh = RefreshToken.for_user(user)
-        return Response({
-            'user': UserSerializer(user, context={'request': request}).data,
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
-        }, status=status.HTTP_200_OK)
 
 
 class ProfileView(APIView):
@@ -526,12 +468,14 @@ class ResetPasswordView(APIView):
 
 
 class AllUsersView(APIView):
-    """Admin only — list all users"""
+    """Admin only — list all users, paginated"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         if not request.user.is_platform_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         users = User.objects.all().order_by('-date_joined')
-        serializer = UserSerializer(users, many=True, context={'request': request})
-        return Response(serializer.data)
+        paginator = UsersPagination()
+        page = paginator.paginate_queryset(users, request)
+        serializer = UserSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)

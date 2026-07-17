@@ -8,11 +8,15 @@ from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-
+from rest_framework.pagination import PageNumberPagination
 from .models import Order
 from .serializers import OrderSerializer, OrderCreateSerializer
 
 
+class OrdersPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 class PlaceOrderView(APIView):
     """Customer places a new order — notifies restaurant in real time"""
     permission_classes = [IsAuthenticated]
@@ -51,13 +55,15 @@ class PlaceOrderView(APIView):
 
 
 class MyOrdersView(APIView):
-    """Customer sees only their own orders"""
+    """Customer sees only their own orders — paginated, 20 per page"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         orders = Order.objects.filter(customer=request.user).order_by('-created_at')
-        serializer = OrderSerializer(orders, many=True, context={'request': request})
-        return Response(serializer.data)
+        paginator = OrdersPagination()
+        page = paginator.paginate_queryset(orders, request)
+        serializer = OrderSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
 
 class OrderDetailView(APIView):
@@ -120,7 +126,7 @@ class UpdateOrderStatusView(APIView):
 
 
 class RestaurantOrdersView(APIView):
-    """Restaurant manager sees all orders for their restaurant"""
+    """Restaurant manager sees all orders for their restaurant — paginated"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, restaurant_id):
@@ -131,17 +137,20 @@ class RestaurantOrdersView(APIView):
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         orders = Order.objects.filter(restaurant=restaurant).order_by('-created_at')
-        serializer = OrderSerializer(orders, many=True, context={'request': request})
-        return Response(serializer.data)
-
+        paginator = OrdersPagination()
+        page = paginator.paginate_queryset(orders, request)
+        serializer = OrderSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
 class AllOrdersView(APIView):
-    """Platform admin sees all orders across all restaurants"""
+    """Platform admin sees all orders across all restaurants — paginated"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         if not request.user.is_platform_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         orders = Order.objects.all().order_by('-created_at')
-        serializer = OrderSerializer(orders, many=True, context={'request': request})
-        return Response(serializer.data)
+        paginator = OrdersPagination()
+        page = paginator.paginate_queryset(orders, request)
+        serializer = OrderSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
