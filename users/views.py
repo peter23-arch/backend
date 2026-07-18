@@ -35,14 +35,12 @@ class UsersPagination(PageNumberPagination):
 
 
 class GoogleAuthView(APIView):
-    """Login or register customer using Google ID token"""
+    """Login or register using Google ID token — works for any existing account,
+    new sign-ups default to customer."""
     permission_classes = [AllowAny]
 
     def post(self, request):
-        # Get the token from request
         id_token = request.data.get('id_token', '').strip()
-
-        # Log for debugging
         print(f"📥 Received token: {id_token[:50] if id_token else 'None'}...")
 
         if not id_token:
@@ -51,7 +49,6 @@ class GoogleAuthView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check if Firebase is initialized
         if not firebase_admin._apps:
             return Response(
                 {'error': 'Google sign-in is not configured on the server.'},
@@ -59,50 +56,29 @@ class GoogleAuthView(APIView):
             )
 
         try:
-            # Verify the token with Firebase
             decoded = auth.verify_id_token(id_token)
-
-            # Log success
             print(f"✅ Token verified for: {decoded.get('email')}")
-
         except auth.InvalidIdTokenError as e:
             print(f"❌ Invalid token: {e}")
-            return Response(
-                {'error': 'Invalid Google token. Please try signing in again.'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({'error': 'Invalid Google token. Please try signing in again.'}, status=status.HTTP_401_UNAUTHORIZED)
         except auth.ExpiredIdTokenError as e:
             print(f"❌ Expired token: {e}")
-            return Response(
-                {'error': 'Google token has expired. Please try signing in again.'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({'error': 'Google token has expired. Please try signing in again.'}, status=status.HTTP_401_UNAUTHORIZED)
         except Exception as e:
             print(f"❌ Token verification error: {e}")
-            return Response(
-                {'error': f'Token verification failed: {str(e)}'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({'error': f'Token verification failed: {str(e)}'}, status=status.HTTP_401_UNAUTHORIZED)
 
         email = decoded.get('email')
         if not email:
-            return Response(
-                {'error': 'Google account email is required.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({'error': 'Google account email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Continue with user creation/login...
         first_name, last_name = _split_name(decoded.get('name', ''))
         phone = decoded.get('phone_number', '') or ''
 
         user = User.objects.filter(email__iexact=email).first()
 
-        if user and user.role != 'customer':
-            return Response(
-                {'error': 'This account is not allowed to sign in with customer Google auth.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
+        # No role check here anymore — any existing account (customer, manager,
+        # or admin) can log in with Google as long as the email matches.
         if not user:
             import uuid
             generated_password = str(uuid.uuid4())
@@ -135,26 +111,18 @@ class GoogleAuthView(APIView):
                 user.save(update_fields=updated_fields)
                 print(f"✅ Updated user: {email}")
 
-        refresh = RefreshToken.for_user(user)
+        if not user.is_active:
+            return Response({'error': 'This account has been deactivated.'}, status=status.HTTP_403_FORBIDDEN)
 
+        refresh = RefreshToken.for_user(user)
         response_data = {
             'user': UserSerializer(user, context={'request': request}).data,
             'access': str(refresh.access_token),
             'refresh': str(refresh),
         }
 
-        print(f"✅ Google login successful for: {email}")
+        print(f"✅ Google login successful for: {email} (role: {user.role})")
         return Response(response_data, status=status.HTTP_200_OK)
-
-
-def _split_name(display_name):
-    name = (display_name or '').strip()
-    if not name:
-        return '', ''
-    parts = name.split()
-    first_name = parts[0]
-    last_name = ' '.join(parts[1:]) if len(parts) > 1 else ''
-    return first_name, last_name
 
 
 class RegisterView(APIView):
