@@ -7,6 +7,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from notifications.firebase import send_push_to_multiple
+from django.contrib.auth import get_user_model
 from .models import Restaurant
 from .serializers import RestaurantSerializer, RestaurantCreateSerializer
 
@@ -41,10 +43,37 @@ class RestaurantListView(APIView):
         serializer = RestaurantCreateSerializer(data=request.data)
         if serializer.is_valid():
             restaurant = serializer.save(manager=None)
-            return Response(
-                RestaurantSerializer(restaurant, context={'request': request}).data,
-                status=status.HTTP_201_CREATED
+            restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
+
+            # Live update everyone connected — customers see it appear instantly,
+            # admin's restaurant list and stats update instantly too
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                'broadcast_all',
+                {
+                    'type': 'restaurant_broadcast',
+                    'message': {
+                        'type': 'NEW_RESTAURANT',
+                        'restaurant': restaurant_data,
+                    }
+                }
             )
+
+            # Push notification to customers not currently in the app
+            User = get_user_model()
+            customer_tokens = list(
+                User.objects.filter(role='customer', fcm_token__isnull=False)
+                .exclude(fcm_token='').values_list('fcm_token', flat=True)
+            )
+            if customer_tokens:
+                send_push_to_multiple(
+                    tokens=customer_tokens,
+                    title='🎉 New restaurant in town!',
+                    body=f'{restaurant.name} just joined MoiEats — check it out',
+                    data={'type': 'NEW_RESTAURANT', 'restaurant_id': str(restaurant.id)},
+                )
+
+            return Response(restaurant_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -95,7 +124,15 @@ class RestaurantSuspendView(APIView):
             return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
 
         restaurant.save()
-        return Response(RestaurantSerializer(restaurant, context={'request': request}).data)
+
+        restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            'broadcast_all',
+            {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
+        )
+
+        return Response(restaurant_data)
 
 
 class AssignManagerView(APIView):
@@ -130,21 +167,23 @@ class AssignManagerView(APIView):
 
         from users.serializers import UserSerializer
         updated_user_data = UserSerializer(user, context={'request': request}).data
+        restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
 
-        # Instantly flip that user's interface, even mid-session
         channel_layer = get_channel_layer()
+
+        # Flip that specific user's interface instantly
         async_to_sync(channel_layer.group_send)(
             f'user_{user.id}',
-            {
-                'type': 'role_changed',
-                'message': {
-                    'type': 'ROLE_CHANGED',
-                    'user': updated_user_data,
-                }
-            }
+            {'type': 'role_changed', 'message': {'type': 'ROLE_CHANGED', 'user': updated_user_data}}
         )
 
-        return Response(RestaurantSerializer(restaurant, context={'request': request}).data)
+        # Update the card on everyone's (admin's) restaurant list instantly
+        async_to_sync(channel_layer.group_send)(
+            'broadcast_all',
+            {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
+        )
+
+        return Response(restaurant_data)
 
 
 class RemoveManagerView(APIView):
@@ -168,20 +207,21 @@ class RemoveManagerView(APIView):
 
         from users.serializers import UserSerializer
         updated_user_data = UserSerializer(old_manager, context={'request': request}).data
+        restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
 
         channel_layer = get_channel_layer()
+
         async_to_sync(channel_layer.group_send)(
             f'user_{old_manager.id}',
-            {
-                'type': 'role_changed',
-                'message': {
-                    'type': 'ROLE_CHANGED',
-                    'user': updated_user_data,
-                }
-            }
+            {'type': 'role_changed', 'message': {'type': 'ROLE_CHANGED', 'user': updated_user_data}}
         )
 
-        return Response(RestaurantSerializer(restaurant, context={'request': request}).data)
+        async_to_sync(channel_layer.group_send)(
+            'broadcast_all',
+            {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
+        )
+
+        return Response(restaurant_data)
 
 
 class MyRestaurantView(APIView):
@@ -209,7 +249,14 @@ class RestaurantDeleteView(APIView):
 
         restaurant = get_object_or_404(Restaurant, pk=pk)
         name = restaurant.name
+        restaurant_id = restaurant.id
         restaurant.delete()
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            'broadcast_all',
+            {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_DELETED', 'restaurant_id': restaurant_id}}
+        )
 
         return Response(
             {'message': f'"{name}" and all its data have been permanently deleted.'},
