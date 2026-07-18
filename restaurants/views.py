@@ -250,9 +250,26 @@ class RestaurantDeleteView(APIView):
         restaurant = get_object_or_404(Restaurant, pk=pk)
         name = restaurant.name
         restaurant_id = restaurant.id
-        restaurant.delete()
+        manager = restaurant.manager
 
         channel_layer = get_channel_layer()
+
+        # If this restaurant had a manager, strip their role before the
+        # restaurant row disappears — they instantly become a regular customer
+        if manager:
+            manager.role = 'customer'
+            manager.save(update_fields=['role'])
+
+            from users.serializers import UserSerializer
+            updated_user_data = UserSerializer(manager, context={'request': request}).data
+
+            async_to_sync(channel_layer.group_send)(
+                f'user_{manager.id}',
+                {'type': 'role_changed', 'message': {'type': 'ROLE_CHANGED', 'user': updated_user_data}}
+            )
+
+        restaurant.delete()
+
         async_to_sync(channel_layer.group_send)(
             'broadcast_all',
             {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_DELETED', 'restaurant_id': restaurant_id}}
