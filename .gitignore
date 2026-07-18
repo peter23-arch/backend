@@ -3,3 +3,4 @@ firebase-service-account.json
 
 *.key
 *.pem
+venv/

@@ -1,6 +1,7 @@
 
 
 from django.urls import path
+from .views import AvailableManagersView
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     RegisterView,
@@ -30,4 +31,5 @@ urlpatterns = [
     path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
     path('reset-password/', ResetPasswordView.as_view(), name='reset_password'),
+    path('available-managers/', AvailableManagersView.as_view(), name='available_managers'),
 ]

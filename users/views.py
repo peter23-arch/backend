@@ -361,6 +361,32 @@ class ChangePasswordView(APIView):
         })
 
 
+class AvailableManagersView(APIView):
+    """Admin only — search customers eligible to become a manager"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_platform_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        search = request.query_params.get('search', '').strip()
+        users = User.objects.filter(role='customer')
+        if search:
+            from django.db.models import Q
+            users = users.filter(
+                Q(email__icontains=search) |
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+        users = users.order_by('first_name', 'last_name')
+
+        paginator = UsersPagination()
+        page = paginator.paginate_queryset(users, request)
+        serializer = UserSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
+
+
 class ForgotPasswordView(APIView):
     """
     User submits their email.
