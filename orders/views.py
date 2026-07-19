@@ -17,17 +17,33 @@ class OrdersPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 100
+
+
 class PlaceOrderView(APIView):
     """Customer places a new order — notifies restaurant in real time"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not request.data.get('delivery_phone', '').strip():
+            return Response({'error': 'A phone number is required to place an order.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.data.get('delivery_location', '').strip():
+            return Response({'error': 'A delivery location is required to place an order.'}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = OrderCreateSerializer(data=request.data)
+
         if serializer.is_valid():
+            restaurant = serializer.validated_data['restaurant']
+
+            # A restaurant can now exist with no manager yet — block ordering from it
+            if restaurant.manager is None:
+                return Response(
+                    {'error': 'This restaurant is not yet accepting orders.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             order = serializer.save(customer=request.user)
             order_data = OrderSerializer(order, context={'request': request}).data
 
-            # Send real-time notification to the restaurant manager
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f'restaurant_{order.restaurant.id}_manager',
@@ -40,9 +56,8 @@ class PlaceOrderView(APIView):
                 }
             )
 
-            # Push notification to restaurant manager (works even if browser tab is closed)
             manager = order.restaurant.manager
-            if manager.fcm_token:
+            if manager and manager.fcm_token:
                 send_push_notification(
                     token=manager.fcm_token,
                     title=f'🛎️ New Order — {order.restaurant.name}',
@@ -99,7 +114,6 @@ class UpdateOrderStatusView(APIView):
 
         order_data = OrderSerializer(order, context={'request': request}).data
 
-        # Notify the customer that their order status changed
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f'user_{order.customer.id}',
@@ -112,7 +126,6 @@ class UpdateOrderStatusView(APIView):
             }
         )
 
-        # Push notification to customer
         customer = order.customer
         if customer.fcm_token:
             send_push_notification(
@@ -141,6 +154,7 @@ class RestaurantOrdersView(APIView):
         page = paginator.paginate_queryset(orders, request)
         serializer = OrderSerializer(page, many=True, context={'request': request})
         return paginator.get_paginated_response(serializer.data)
+
 
 class AllOrdersView(APIView):
     """Platform admin sees all orders across all restaurants — paginated"""

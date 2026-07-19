@@ -5,8 +5,6 @@ from .models import Order, OrderItem
 from menu.serializers import MenuItemSerializer
 
 
-# orders/serializers.py
-
 class OrderItemSerializer(serializers.ModelSerializer):
     """Serialize a single order line item"""
 
@@ -20,14 +18,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
                   'quantity', 'unit_price', 'subtotal']
 
     def get_menu_item_image_url(self, obj):
-        """Get the menu item image URL"""
         if obj.menu_item.image:
-            # Since it's a URLField, just return the URL directly
-            # If it's a relative URL, you might want to build the absolute URL
             if obj.menu_item.image.startswith(('http://', 'https://')):
                 return obj.menu_item.image
-            
-            # If it's a relative URL and you need absolute URL
             request = self.context.get('request')
             if request:
                 return request.build_absolute_uri(obj.menu_item.image)
@@ -57,7 +50,8 @@ class OrderSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'customer_name', 'customer_email', 'restaurant_name',
             'restaurant', 'status', 'status_display', 'total_amount',
-            'notes', 'items', 'created_at', 'updated_at'
+            'delivery_phone', 'delivery_location', 'notes',
+            'items', 'created_at', 'updated_at'
         ]
 
 
@@ -68,7 +62,7 @@ class OrderCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ['restaurant', 'notes', 'items']
+        fields = ['restaurant', 'notes', 'delivery_phone', 'delivery_location', 'items']
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
@@ -80,7 +74,7 @@ class OrderCreateSerializer(serializers.ModelSerializer):
                 order=order,
                 menu_item=menu_item,
                 quantity=item_data['quantity'],
-                unit_price=menu_item.price  # snapshot price at time of order
+                unit_price=menu_item.price
             )
 
         order.calculate_total()

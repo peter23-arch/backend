@@ -4,3 +4,6 @@ firebase-service-account.json
 *.key
 *.pem
 venv/
+.venv/
+
+__pycache__/

@@ -29,6 +29,8 @@ class Order(models.Model):
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    delivery_phone = models.CharField(max_length=20, null=True, blank=True)  # optional for pickup orders
+    delivery_location = models.CharField(max_length=500,null=True, blank=True)  # optional for pickup orders
     notes = models.TextField(blank=True)  # special instructions from customer
 
     created_at = models.DateTimeField(auto_now_add=True)
