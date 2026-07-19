@@ -1,7 +1,7 @@
 # users/views.py — Authentication views
 
 import uuid
-# At the top of users/views.py
+import json
 
 import firebase_config  # This will auto-initialize
 import firebase_admin
@@ -14,6 +14,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import get_user_model
 from .serializers import (
     UserRegistrationSerializer,
@@ -21,11 +22,19 @@ from .serializers import (
     UserUpdateSerializer,
     ChangePasswordSerializer,
 )
-from rest_framework.pagination import PageNumberPagination
 
 User = get_user_model()
 
-import json
+
+def _split_name(display_name):
+    """Top-level helper — must NOT be indented inside any class."""
+    name = (display_name or '').strip()
+    if not name:
+        return '', ''
+    parts = name.split()
+    first_name = parts[0]
+    last_name = ' '.join(parts[1:]) if len(parts) > 1 else ''
+    return first_name, last_name
 
 
 class UsersPagination(PageNumberPagination):
@@ -77,10 +86,9 @@ class GoogleAuthView(APIView):
 
         user = User.objects.filter(email__iexact=email).first()
 
-        # No role check here anymore — any existing account (customer, manager,
+        # No role restriction here — any existing account (customer, manager,
         # or admin) can log in with Google as long as the email matches.
         if not user:
-            import uuid
             generated_password = str(uuid.uuid4())
             serializer = UserRegistrationSerializer(data={
                 'email': email,
@@ -136,14 +144,12 @@ class RegisterView(APIView):
     def post(self, request):
         requested_role = request.data.get('role', 'customer')
 
-        # Block anyone from self-registering as manager or admin
         if requested_role in ['restaurant_manager', 'platform_admin']:
             return Response(
                 {'error': 'You cannot register as a manager or admin from this page.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Force role to customer regardless of what was sent
         data = request.data.copy()
         data['role'] = 'customer'
 
@@ -159,7 +165,6 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# users/views.py - RegisterManagerView
 class RegisterManagerView(APIView):
     """Admin only — register a restaurant manager"""
     permission_classes = [IsAuthenticated]
@@ -171,14 +176,8 @@ class RegisterManagerView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Debug: Print the received data
-        print("Received data:", request.data)
-
         data = request.data.copy()
         data['role'] = 'restaurant_manager'
-
-        # Debug: Print the data being sent to serializer
-        print("Data for serializer:", data)
 
         serializer = UserRegistrationSerializer(data=data)
         if serializer.is_valid():
@@ -190,8 +189,6 @@ class RegisterManagerView(APIView):
                 'login_email': user.email,
             }, status=status.HTTP_201_CREATED)
 
-        # Debug: Print the validation errors
-        print("Serializer errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -200,11 +197,11 @@ class PlatformAdminSetupView(APIView):
     Used once for initial platform admin registration.
     Afterwards, only superusers can create new platform admins.
     """
-    permission_classes = [AllowAny]  # Only the very first setup
+    permission_classes = [AllowAny]
 
     def post(self, request):
         setup_key = request.data.get('setup_key', '').strip()
-        if not setup_key or setup_key != "PETERPRAISE":
+        if not setup_key or setup_key != settings.ADMIN_SETUP_KEY:
             return Response(
                 {'error': 'Invalid admin setup key.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -310,7 +307,6 @@ class ChangePasswordView(APIView):
         current_password = serializer.validated_data['current_password']
         new_password = serializer.validated_data['new_password']
 
-        # Verify current password is correct
         if not user.check_password(current_password):
             return Response(
                 {'error': 'Current password is incorrect.'},
@@ -320,7 +316,6 @@ class ChangePasswordView(APIView):
         user.set_password(new_password)
         user.save()
 
-        # Re-generate tokens since password changed
         refresh = RefreshToken.for_user(user)
         return Response({
             'message': 'Password changed successfully.',
@@ -329,37 +324,10 @@ class ChangePasswordView(APIView):
         })
 
 
-class AvailableManagersView(APIView):
-    """Admin only — search customers eligible to become a manager"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        if not request.user.is_platform_admin:
-            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
-
-        search = request.query_params.get('search', '').strip()
-        users = User.objects.filter(role='customer')
-        if search:
-            from django.db.models import Q
-            users = users.filter(
-                Q(email__icontains=search) |
-                Q(username__icontains=search) |
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search)
-            )
-        users = users.order_by('first_name', 'last_name')
-
-        paginator = UsersPagination()
-        page = paginator.paginate_queryset(users, request)
-        serializer = UserSerializer(page, many=True, context={'request': request})
-        return paginator.get_paginated_response(serializer.data)
-
-
 class ForgotPasswordView(APIView):
     """
     User submits their email.
     We generate a reset token, save it on the user, and email a reset link.
-    In dev mode the email prints to the console/terminal.
     """
     permission_classes = [AllowAny]
 
@@ -371,8 +339,6 @@ class ForgotPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # We always return 200 even if email not found — security best practice
-        # so attackers can't enumerate which emails are registered
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
@@ -380,15 +346,12 @@ class ForgotPasswordView(APIView):
                 'message': 'If that email is registered, a reset link has been sent.'
             })
 
-        # Generate a unique token and store it on the user
         token = str(uuid.uuid4()).replace('-', '')
         user.password_reset_token = token
         user.save()
 
-        # Build the reset URL pointing to our frontend
         reset_url = f"{settings.FRONTEND_URL}/reset-password/{token}"
 
-        # Send the email
         send_mail(
             subject='Reset Your FoodCourt Password',
             message=f"""
@@ -444,7 +407,6 @@ class ResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Find user by token
         try:
             user = User.objects.get(password_reset_token=token)
         except User.DoesNotExist:
@@ -453,12 +415,37 @@ class ResetPasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Set new password and clear the token
         user.set_password(new_password)
         user.password_reset_token = ''
         user.save()
 
         return Response({'message': 'Password reset successfully. You can now log in.'})
+
+
+class AvailableManagersView(APIView):
+    """Admin only — search customers eligible to become a manager"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_platform_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        search = request.query_params.get('search', '').strip()
+        users = User.objects.filter(role='customer')
+        if search:
+            from django.db.models import Q
+            users = users.filter(
+                Q(email__icontains=search) |
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
+            )
+        users = users.order_by('first_name', 'last_name')
+
+        paginator = UsersPagination()
+        page = paginator.paginate_queryset(users, request)
+        serializer = UserSerializer(page, many=True, context={'request': request})
+        return paginator.get_paginated_response(serializer.data)
 
 
 class AllUsersView(APIView):
