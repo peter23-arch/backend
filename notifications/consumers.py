@@ -14,7 +14,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     """
     Handles WebSocket connections for real-time notifications.
     Each user connects to their personal channel, any restaurant channel,
-    and a shared broadcast channel for platform-wide announcements.
+    a shared broadcast channel, and — for platform admins — an admin-only channel.
     """
 
     async def connect(self):
@@ -31,10 +31,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         self.personal_group = f'user_{self.user.id}'
         await self.channel_layer.group_add(self.personal_group, self.channel_name)
 
-        # Everyone joins this — used for "new restaurant" announcements,
-        # and admin-facing live updates (restaurant list changes, etc.)
         self.broadcast_group = 'broadcast_all'
         await self.channel_layer.group_add(self.broadcast_group, self.channel_name)
+
+        if self.user.is_platform_admin:
+            self.admin_group = 'admin_broadcasts'
+            await self.channel_layer.group_add(self.admin_group, self.channel_name)
 
         restaurant = await self.get_user_restaurant(self.user)
         if restaurant:
@@ -48,6 +50,8 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.personal_group, self.channel_name)
         if hasattr(self, 'broadcast_group'):
             await self.channel_layer.group_discard(self.broadcast_group, self.channel_name)
+        if hasattr(self, 'admin_group'):
+            await self.channel_layer.group_discard(self.admin_group, self.channel_name)
         if hasattr(self, 'manager_group'):
             await self.channel_layer.group_discard(self.manager_group, self.channel_name)
 
@@ -70,6 +74,9 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(event['message']))
 
     async def new_review(self, event):
+        await self.send(text_data=json.dumps(event['message']))
+
+    async def review_deleted(self, event):
         await self.send(text_data=json.dumps(event['message']))
 
     async def role_changed(self, event):

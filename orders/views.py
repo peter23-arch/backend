@@ -3,9 +3,11 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from notifications.firebase import send_push_notification
+from notifications.firebase import send_push_notification, send_push_to_multiple
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from rest_framework.pagination import PageNumberPagination
@@ -20,7 +22,7 @@ class OrdersPagination(PageNumberPagination):
 
 
 class PlaceOrderView(APIView):
-    """Customer places a new order — notifies restaurant in real time"""
+    """Customer places a new order — notifies restaurant manager AND admins in real time"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -34,7 +36,6 @@ class PlaceOrderView(APIView):
         if serializer.is_valid():
             restaurant = serializer.validated_data['restaurant']
 
-            # A restaurant can now exist with no manager yet — block ordering from it
             if restaurant.manager is None:
                 return Response(
                     {'error': 'This restaurant is not yet accepting orders.'},
@@ -45,15 +46,17 @@ class PlaceOrderView(APIView):
             order_data = OrderSerializer(order, context={'request': request}).data
 
             channel_layer = get_channel_layer()
+
+            # Live update to the restaurant's manager
             async_to_sync(channel_layer.group_send)(
                 f'restaurant_{order.restaurant.id}_manager',
-                {
-                    'type': 'new_order',
-                    'message': {
-                        'type': 'NEW_ORDER',
-                        'order': order_data,
-                    }
-                }
+                {'type': 'new_order', 'message': {'type': 'NEW_ORDER', 'order': order_data}}
+            )
+
+            # Live update to every platform admin currently connected
+            async_to_sync(channel_layer.group_send)(
+                'admin_broadcasts',
+                {'type': 'new_order', 'message': {'type': 'NEW_ORDER', 'order': order_data}}
             )
 
             manager = order.restaurant.manager
@@ -62,6 +65,20 @@ class PlaceOrderView(APIView):
                     token=manager.fcm_token,
                     title=f'🛎️ New Order — {order.restaurant.name}',
                     body=f'Order #{order.id} from {request.user.get_full_name() or request.user.username}',
+                    data={'type': 'NEW_ORDER', 'order_id': str(order.id)},
+                )
+
+            # Push notification to admins not currently in the app
+            User = get_user_model()
+            admin_tokens = list(
+                User.objects.filter(role='platform_admin', fcm_token__isnull=False)
+                .exclude(fcm_token='').values_list('fcm_token', flat=True)
+            )
+            if admin_tokens:
+                send_push_to_multiple(
+                    tokens=admin_tokens,
+                    title=f'🛎️ New Order — {order.restaurant.name}',
+                    body=f'Order #{order.id} · KSh {order.total_amount}',
                     data={'type': 'NEW_ORDER', 'order_id': str(order.id)},
                 )
 
@@ -117,13 +134,7 @@ class UpdateOrderStatusView(APIView):
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f'user_{order.customer.id}',
-            {
-                'type': 'order_update',
-                'message': {
-                    'type': 'ORDER_STATUS_UPDATE',
-                    'order': order_data,
-                }
-            }
+            {'type': 'order_update', 'message': {'type': 'ORDER_STATUS_UPDATE', 'order': order_data}}
         )
 
         customer = order.customer
@@ -139,7 +150,8 @@ class UpdateOrderStatusView(APIView):
 
 
 class RestaurantOrdersView(APIView):
-    """Restaurant manager sees all orders for their restaurant — paginated"""
+    """Restaurant manager (or admin) sees orders for a restaurant — paginated,
+    optionally filtered by ?range=today or ?range=month"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, restaurant_id):
@@ -150,6 +162,14 @@ class RestaurantOrdersView(APIView):
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         orders = Order.objects.filter(restaurant=restaurant).order_by('-created_at')
+
+        range_filter = request.query_params.get('range')
+        today = timezone.localtime().date()
+        if range_filter == 'today':
+            orders = orders.filter(created_at__date=today)
+        elif range_filter == 'month':
+            orders = orders.filter(created_at__year=today.year, created_at__month=today.month)
+
         paginator = OrdersPagination()
         page = paginator.paginate_queryset(orders, request)
         serializer = OrderSerializer(page, many=True, context={'request': request})

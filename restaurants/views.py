@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from notifications.firebase import send_push_to_multiple
@@ -14,11 +15,6 @@ from .serializers import RestaurantSerializer, RestaurantCreateSerializer
 
 
 class RestaurantListView(APIView):
-    """
-    GET — Public: list all active restaurants
-    POST — Platform admin: register a new restaurant (no manager yet — assigned separately)
-    """
-
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
@@ -37,29 +33,19 @@ class RestaurantListView(APIView):
 
     def post(self, request):
         if not request.user.is_platform_admin:
-            return Response({'error': 'Only platform admin can register restaurants.'},
-                            status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': 'Only platform admin can register restaurants.'}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = RestaurantCreateSerializer(data=request.data)
         if serializer.is_valid():
             restaurant = serializer.save(manager=None)
             restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
 
-            # Live update everyone connected — customers see it appear instantly,
-            # admin's restaurant list and stats update instantly too
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 'broadcast_all',
-                {
-                    'type': 'restaurant_broadcast',
-                    'message': {
-                        'type': 'NEW_RESTAURANT',
-                        'restaurant': restaurant_data,
-                    }
-                }
+                {'type': 'restaurant_broadcast', 'message': {'type': 'NEW_RESTAURANT', 'restaurant': restaurant_data}}
             )
 
-            # Push notification to customers not currently in the app
             User = get_user_model()
             customer_tokens = list(
                 User.objects.filter(role='customer', fcm_token__isnull=False)
@@ -78,11 +64,6 @@ class RestaurantListView(APIView):
 
 
 class RestaurantDetailView(APIView):
-    """
-    GET — Public: get single restaurant details
-    PUT — Manager or admin: update restaurant
-    """
-
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
@@ -105,8 +86,33 @@ class RestaurantDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class RestaurantStatsView(APIView):
+    """Admin only — order and review stats for a single restaurant"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        if not request.user.is_platform_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        restaurant = get_object_or_404(Restaurant, pk=pk)
+        today = timezone.localtime().date()
+
+        orders = restaurant.orders.all()
+        today_orders = orders.filter(created_at__date=today).count()
+        month_orders = orders.filter(created_at__year=today.year, created_at__month=today.month).count()
+        total_orders = orders.count()
+
+        return Response({
+            'restaurant': RestaurantSerializer(restaurant, context={'request': request}).data,
+            'today_orders': today_orders,
+            'month_orders': month_orders,
+            'total_orders': total_orders,
+            'total_reviews': restaurant.total_reviews,
+            'average_rating': restaurant.average_rating,
+        })
+
+
 class RestaurantSuspendView(APIView):
-    """Admin only — suspend or reactivate a restaurant"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -136,7 +142,6 @@ class RestaurantSuspendView(APIView):
 
 
 class AssignManagerView(APIView):
-    """Admin only — assign an existing customer as manager of this restaurant"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -170,14 +175,10 @@ class AssignManagerView(APIView):
         restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
 
         channel_layer = get_channel_layer()
-
-        # Flip that specific user's interface instantly
         async_to_sync(channel_layer.group_send)(
             f'user_{user.id}',
             {'type': 'role_changed', 'message': {'type': 'ROLE_CHANGED', 'user': updated_user_data}}
         )
-
-        # Update the card on everyone's (admin's) restaurant list instantly
         async_to_sync(channel_layer.group_send)(
             'broadcast_all',
             {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
@@ -187,7 +188,6 @@ class AssignManagerView(APIView):
 
 
 class RemoveManagerView(APIView):
-    """Admin only — strip a manager's role and detach them from the restaurant"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
@@ -210,12 +210,10 @@ class RemoveManagerView(APIView):
         restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
 
         channel_layer = get_channel_layer()
-
         async_to_sync(channel_layer.group_send)(
             f'user_{old_manager.id}',
             {'type': 'role_changed', 'message': {'type': 'ROLE_CHANGED', 'user': updated_user_data}}
         )
-
         async_to_sync(channel_layer.group_send)(
             'broadcast_all',
             {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
@@ -225,7 +223,6 @@ class RemoveManagerView(APIView):
 
 
 class MyRestaurantView(APIView):
-    """Restaurant manager gets their own restaurant details"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -240,7 +237,6 @@ class MyRestaurantView(APIView):
 
 
 class RestaurantDeleteView(APIView):
-    """Admin only — permanently delete a restaurant and everything linked to it"""
     permission_classes = [IsAuthenticated]
 
     def delete(self, request, pk):
@@ -254,8 +250,6 @@ class RestaurantDeleteView(APIView):
 
         channel_layer = get_channel_layer()
 
-        # If this restaurant had a manager, strip their role before the
-        # restaurant row disappears — they instantly become a regular customer
         if manager:
             manager.role = 'customer'
             manager.save(update_fields=['role'])
