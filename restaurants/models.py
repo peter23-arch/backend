@@ -21,6 +21,11 @@ class Restaurant(models.Model):
         blank=True,
         related_name='restaurant'
     )
+    is_open = models.BooleanField(default=True)
+    # Percentage of each completed order's value that goes to the platform.
+    # Snapshotted onto each Order at creation time so changing this later
+    # doesn't retroactively alter past orders' fee calculations.
+    platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=10.00)
 
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)

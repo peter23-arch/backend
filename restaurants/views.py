@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.db.models import Sum, F, ExpressionWrapper, DecimalField
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from notifications.firebase import send_push_to_multiple
@@ -64,6 +65,12 @@ class RestaurantListView(APIView):
 
 
 class RestaurantDetailView(APIView):
+    """
+    GET — Public
+    PUT — Manager or admin: update restaurant, including toggling is_open —
+    broadcasts live so customers see Open/Closed change instantly
+    """
+
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
@@ -82,33 +89,99 @@ class RestaurantDetailView(APIView):
         serializer = RestaurantCreateSerializer(restaurant, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(RestaurantSerializer(restaurant, context={'request': request}).data)
+            restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                'broadcast_all',
+                {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_UPDATED', 'restaurant': restaurant_data}}
+            )
+
+            return Response(restaurant_data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class RestaurantStatsView(APIView):
-    """Admin only — order and review stats for a single restaurant"""
+class SetPlatformFeeView(APIView):
+    """Admin only — set the commission percentage this restaurant pays per completed order"""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, pk):
+    def post(self, request, pk):
         if not request.user.is_platform_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         restaurant = get_object_or_404(Restaurant, pk=pk)
-        today = timezone.localtime().date()
+        fee_value = request.data.get('platform_fee_percent')
 
-        orders = restaurant.orders.all()
-        today_orders = orders.filter(created_at__date=today).count()
-        month_orders = orders.filter(created_at__year=today.year, created_at__month=today.month).count()
-        total_orders = orders.count()
+        try:
+            fee_value = float(fee_value)
+        except (TypeError, ValueError):
+            return Response({'error': 'A valid numeric fee percentage is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if fee_value < 0 or fee_value > 100:
+            return Response({'error': 'Fee percentage must be between 0 and 100.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        restaurant.platform_fee_percent = fee_value
+        restaurant.save(update_fields=['platform_fee_percent'])
+
+        restaurant_data = RestaurantSerializer(restaurant, context={'request': request}).data
+
+        # Tell that manager's dashboard to refresh its stats/fee display live
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'restaurant_{restaurant.id}_manager',
+            {'type': 'restaurant_broadcast', 'message': {'type': 'FEE_UPDATED', 'restaurant': restaurant_data}}
+        )
+
+        return Response(restaurant_data)
+
+
+class RestaurantStatsView(APIView):
+    """Admin OR that restaurant's own manager — order counts, revenue, and
+    platform fee breakdown for today and this month. Only COMPLETED orders
+    count toward revenue/fee, since that's when money has actually changed hands."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        restaurant = get_object_or_404(Restaurant, pk=pk)
+        if not (request.user.is_platform_admin or restaurant.manager == request.user):
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.localtime().date()
+        all_orders = restaurant.orders.all()
+
+        today_orders_qs = all_orders.filter(created_at__date=today)
+        month_orders_qs = all_orders.filter(created_at__year=today.year, created_at__month=today.month)
+
+        completed_today = today_orders_qs.filter(status='completed')
+        completed_month = month_orders_qs.filter(status='completed')
+
+        fee_expr = ExpressionWrapper(
+            F('total_amount') * F('platform_fee_percent') / 100,
+            output_field=DecimalField(max_digits=10, decimal_places=2)
+        )
+
+        revenue_today = completed_today.aggregate(total=Sum('total_amount'))['total'] or 0
+        fee_today = completed_today.aggregate(total=Sum(fee_expr))['total'] or 0
+        net_today = revenue_today - fee_today
+
+        revenue_month = completed_month.aggregate(total=Sum('total_amount'))['total'] or 0
+        fee_month = completed_month.aggregate(total=Sum(fee_expr))['total'] or 0
+        net_month = revenue_month - fee_month
 
         return Response({
             'restaurant': RestaurantSerializer(restaurant, context={'request': request}).data,
-            'today_orders': today_orders,
-            'month_orders': month_orders,
-            'total_orders': total_orders,
+            'today_orders': today_orders_qs.count(),
+            'month_orders': month_orders_qs.count(),
+            'total_orders': all_orders.count(),
             'total_reviews': restaurant.total_reviews,
             'average_rating': restaurant.average_rating,
+            'platform_fee_percent': str(restaurant.platform_fee_percent),
+            'revenue_today': str(revenue_today),
+            'fee_today': str(fee_today),
+            'net_today': str(net_today),
+            'revenue_month': str(revenue_month),
+            'fee_month': str(fee_month),
+            'net_month': str(net_month),
         })
 
 
@@ -269,7 +342,4 @@ class RestaurantDeleteView(APIView):
             {'type': 'restaurant_broadcast', 'message': {'type': 'RESTAURANT_DELETED', 'restaurant_id': restaurant_id}}
         )
 
-        return Response(
-            {'message': f'"{name}" and all its data have been permanently deleted.'},
-            status=status.HTTP_200_OK
-        )
+        return Response({'message': f'"{name}" and all its data have been permanently deleted.'}, status=status.HTTP_200_OK)

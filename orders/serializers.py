@@ -6,8 +6,6 @@ from menu.serializers import MenuItemSerializer
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
-    """Serialize a single order line item"""
-
     menu_item_name = serializers.CharField(source='menu_item.name', read_only=True)
     menu_item_image_url = serializers.SerializerMethodField()
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
@@ -29,21 +27,21 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 
 class OrderItemCreateSerializer(serializers.ModelSerializer):
-    """Used when placing an order"""
-
     class Meta:
         model = OrderItem
         fields = ['menu_item', 'quantity']
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    """Full order with all items"""
+    """Full order with all items — includes fee breakdown for manager/admin visibility"""
 
     items = OrderItemSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source='customer.get_full_name', read_only=True)
     customer_email = serializers.CharField(source='customer.email', read_only=True)
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    fee_amount = serializers.SerializerMethodField()
+    net_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -51,12 +49,20 @@ class OrderSerializer(serializers.ModelSerializer):
             'id', 'customer_name', 'customer_email', 'restaurant_name',
             'restaurant', 'status', 'status_display', 'total_amount',
             'delivery_phone', 'delivery_location', 'notes',
+            'platform_fee_percent', 'fee_amount', 'net_amount',
             'items', 'created_at', 'updated_at'
         ]
 
+    def get_fee_amount(self, obj):
+        return str(obj.fee_amount)
+
+    def get_net_amount(self, obj):
+        return str(obj.net_amount)
+
 
 class OrderCreateSerializer(serializers.ModelSerializer):
-    """Place a new order"""
+    """Place a new order — platform_fee_percent is NOT client-settable,
+    it's snapshotted server-side from the restaurant's current fee."""
 
     items = OrderItemCreateSerializer(many=True)
 

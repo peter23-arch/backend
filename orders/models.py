@@ -2,6 +2,7 @@
 
 from django.db import models
 from django.conf import settings
+from decimal import Decimal, ROUND_HALF_UP
 
 
 class Order(models.Model):
@@ -28,10 +29,13 @@ class Order(models.Model):
     )
 
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     delivery_phone = models.CharField(max_length=20, null=True, blank=True)  # optional for pickup orders
     delivery_location = models.CharField(max_length=500,null=True, blank=True)  # optional for pickup orders
     notes = models.TextField(blank=True)  # special instructions from customer
+    # Snapshot of the restaurant's fee percentage at the moment this order was placed
+    platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -44,6 +48,13 @@ class Order(models.Model):
         total = sum(item.subtotal for item in self.items.all())
         self.total_amount = total
         self.save()
+    @property
+    def fee_amount(self):
+        return (self.total_amount * self.platform_fee_percent / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    @property
+    def net_amount(self):
+        return self.total_amount - self.fee_amount
 
 
 class OrderItem(models.Model):

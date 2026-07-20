@@ -22,7 +22,8 @@ class OrdersPagination(PageNumberPagination):
 
 
 class PlaceOrderView(APIView):
-    """Customer places a new order — notifies restaurant manager AND admins in real time"""
+    """Customer places a new order — blocked if restaurant is closed,
+    notifies restaurant manager AND admins in real time"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -37,23 +38,24 @@ class PlaceOrderView(APIView):
             restaurant = serializer.validated_data['restaurant']
 
             if restaurant.manager is None:
-                return Response(
-                    {'error': 'This restaurant is not yet accepting orders.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({'error': 'This restaurant is not yet accepting orders.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not restaurant.is_open:
+                return Response({'error': f'{restaurant.name} is currently closed and not accepting orders.'}, status=status.HTTP_400_BAD_REQUEST)
 
             order = serializer.save(customer=request.user)
+
+            # Snapshot the restaurant's current fee onto this order permanently
+            order.platform_fee_percent = restaurant.platform_fee_percent
+            order.save(update_fields=['platform_fee_percent'])
+
             order_data = OrderSerializer(order, context={'request': request}).data
 
             channel_layer = get_channel_layer()
-
-            # Live update to the restaurant's manager
             async_to_sync(channel_layer.group_send)(
                 f'restaurant_{order.restaurant.id}_manager',
                 {'type': 'new_order', 'message': {'type': 'NEW_ORDER', 'order': order_data}}
             )
-
-            # Live update to every platform admin currently connected
             async_to_sync(channel_layer.group_send)(
                 'admin_broadcasts',
                 {'type': 'new_order', 'message': {'type': 'NEW_ORDER', 'order': order_data}}
@@ -68,7 +70,6 @@ class PlaceOrderView(APIView):
                     data={'type': 'NEW_ORDER', 'order_id': str(order.id)},
                 )
 
-            # Push notification to admins not currently in the app
             User = get_user_model()
             admin_tokens = list(
                 User.objects.filter(role='platform_admin', fcm_token__isnull=False)
@@ -87,7 +88,6 @@ class PlaceOrderView(APIView):
 
 
 class MyOrdersView(APIView):
-    """Customer sees only their own orders — paginated, 20 per page"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -99,7 +99,6 @@ class MyOrdersView(APIView):
 
 
 class OrderDetailView(APIView):
-    """Get or update a single order — customer or restaurant manager"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk):
@@ -111,7 +110,8 @@ class OrderDetailView(APIView):
 
 
 class UpdateOrderStatusView(APIView):
-    """Restaurant manager updates order status — notifies customer in real time"""
+    """Restaurant manager updates order status — notifies customer live,
+    and when marked completed, triggers a live stats refresh for manager + admin"""
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
@@ -146,12 +146,21 @@ class UpdateOrderStatusView(APIView):
                 data={'type': 'ORDER_UPDATE', 'order_id': str(order.id)},
             )
 
+        # Order successfully completed — tell manager + admin dashboards to refresh their stats
+        if new_status == 'completed':
+            async_to_sync(channel_layer.group_send)(
+                f'restaurant_{order.restaurant.id}_manager',
+                {'type': 'order_completed', 'message': {'type': 'ORDER_COMPLETED', 'restaurant_id': order.restaurant.id}}
+            )
+            async_to_sync(channel_layer.group_send)(
+                'admin_broadcasts',
+                {'type': 'order_completed', 'message': {'type': 'ORDER_COMPLETED', 'restaurant_id': order.restaurant.id}}
+            )
+
         return Response(order_data)
 
 
 class RestaurantOrdersView(APIView):
-    """Restaurant manager (or admin) sees orders for a restaurant — paginated,
-    optionally filtered by ?range=today or ?range=month"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, restaurant_id):
@@ -177,7 +186,6 @@ class RestaurantOrdersView(APIView):
 
 
 class AllOrdersView(APIView):
-    """Platform admin sees all orders across all restaurants — paginated"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):

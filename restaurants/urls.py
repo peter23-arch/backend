@@ -10,12 +10,14 @@ from .views import (
     AssignManagerView,
     RemoveManagerView,
     RestaurantStatsView,
+    SetPlatformFeeView,
 )
 
 urlpatterns = [
     path('', RestaurantListView.as_view(), name='restaurant_list'),
     path('<int:pk>/', RestaurantDetailView.as_view(), name='restaurant_detail'),
     path('<int:pk>/stats/', RestaurantStatsView.as_view(), name='restaurant_stats'),
+    path('<int:pk>/set-fee/', SetPlatformFeeView.as_view(), name='set_platform_fee'),
     path('<int:pk>/suspend/', RestaurantSuspendView.as_view(), name='restaurant_suspend'),
     path('<int:pk>/delete/', RestaurantDeleteView.as_view(), name='restaurant_delete'),
     path('<int:pk>/assign-manager/', AssignManagerView.as_view(), name='assign_manager'),

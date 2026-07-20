@@ -84,7 +84,10 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     async def restaurant_broadcast(self, event):
         await self.send(text_data=json.dumps(event['message']))
+    async def order_completed(self, event):
+        await self.send(text_data=json.dumps(event['message']))
 
+        
     @database_sync_to_async
     def get_user_from_token(self, token):
         try:
