@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import Sum, F, ExpressionWrapper, DecimalField, Value
+from django.db.models import Sum, F, ExpressionWrapper, DecimalField, Value, Avg
 from django.db.models.functions import Coalesce
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
@@ -260,12 +260,18 @@ class RestaurantStatsView(APIView):
         
         net_month = revenue_month - fee_month
 
-        # Get review stats
+        # ✅ FIX: Get review stats - properly handle mixed types
         reviews = restaurant.reviews.all()
         total_reviews = reviews.count()
-        average_rating = reviews.aggregate(
-            avg=Coalesce(Sum('rating') / Value(total_reviews), Value(Decimal('0.00')))
-        )['avg'] if total_reviews > 0 else None
+        
+        # ✅ Calculate average rating using Avg() which handles Decimal properly
+        avg_result = reviews.aggregate(
+            avg=Coalesce(
+                Avg('rating'), 
+                Value(Decimal('0.00'), output_field=DecimalField(max_digits=3, decimal_places=2))
+            )
+        )
+        average_rating = avg_result['avg']
 
         return Response({
             'restaurant': RestaurantSerializer(restaurant, context={'request': request}).data,
