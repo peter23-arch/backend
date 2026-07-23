@@ -260,18 +260,19 @@ class RestaurantStatsView(APIView):
         
         net_month = revenue_month - fee_month
 
-        # ✅ FIX: Get review stats - properly handle mixed types
+        # ✅ FIXED: Get review stats - simple and works!
         reviews = restaurant.reviews.all()
         total_reviews = reviews.count()
         
-        # ✅ Calculate average rating using Avg() which handles Decimal properly
-        avg_result = reviews.aggregate(
-            avg=Coalesce(
-                Avg('rating'), 
-                Value(Decimal('0.00'), output_field=DecimalField(max_digits=3, decimal_places=2))
-            )
-        )
-        average_rating = avg_result['avg']
+        # Simple average calculation - no Coalesce type issues
+        if total_reviews > 0:
+            # Use Django's Avg - returns a float
+            avg_result = reviews.aggregate(avg=Avg('rating'))
+            average_rating = avg_result['avg']
+            # Convert to Decimal with 2 decimal places
+            average_rating = Decimal(str(round(average_rating, 2)))
+        else:
+            average_rating = None
 
         return Response({
             'restaurant': RestaurantSerializer(restaurant, context={'request': request}).data,
