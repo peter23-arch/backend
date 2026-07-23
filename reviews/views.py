@@ -36,6 +36,7 @@ class RestaurantReviewsView(APIView):
         return paginator.get_paginated_response(serializer.data)
 
     def post(self, request, restaurant_id):
+        # ✅ Check if user already reviewed this restaurant
         existing = Review.objects.filter(customer=request.user, restaurant_id=restaurant_id).first()
         if existing:
             return Response({'error': 'You have already reviewed this restaurant.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -49,23 +50,39 @@ class RestaurantReviewsView(APIView):
             restaurant = get_object_or_404(Restaurant, pk=restaurant_id)
             review_data = ReviewSerializer(review).data
 
+            # ✅ Send WebSocket notification to restaurant manager
             channel_layer = get_channel_layer()
             async_to_sync(channel_layer.group_send)(
                 f'restaurant_{restaurant.id}_manager',
-                {'type': 'new_review', 'message': {'type': 'NEW_REVIEW', 'review': review_data, 'restaurant_id': restaurant.id}}
+                {
+                    'type': 'new_review', 
+                    'message': {
+                        'type': 'NEW_REVIEW', 
+                        'review': review_data, 
+                        'restaurant_id': restaurant.id
+                    }
+                }
             )
 
+            # ✅ FIX: Get the manager and check if it exists before accessing fcm_token
             manager = restaurant.manager
+            
             if manager and manager.fcm_token:
                 preview = (review.comment[:80] + '…') if review.comment and len(review.comment) > 80 else (review.comment or 'No comment left')
-                send_push_notification(
-                    token=manager.fcm_token,
-                    title=f'⭐ New Review — {restaurant.name}',
-                    body=f'{review.rating}/5 — {preview}',
-                    data={'type': 'NEW_REVIEW', 'restaurant_id': str(restaurant.id)},
-                )
+                
+                try:
+                    send_push_notification(
+                        token=manager.fcm_token,
+                        title=f'⭐ New Review — {restaurant.name}',
+                        body=f'{review.rating}/5 — {preview}',
+                        data={'type': 'NEW_REVIEW', 'restaurant_id': str(restaurant.id)},
+                    )
+                except Exception as e:
+                    # ✅ Don't fail if push notification fails
+                    print(f"⚠️ Push notification failed: {e}")
 
             return Response(review_data, status=status.HTTP_201_CREATED)
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -79,12 +96,27 @@ class DeleteReviewView(APIView):
 
         review = get_object_or_404(Review, pk=review_id)
         restaurant_id = review.restaurant_id
+        
+        # ✅ Store review data before deleting
+        review_data = {
+            'id': review.id,
+            'restaurant_id': restaurant_id,
+        }
+        
         review.delete()
 
+        # ✅ Send WebSocket notification about deletion
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             f'restaurant_{restaurant_id}_manager',
-            {'type': 'review_deleted', 'message': {'type': 'REVIEW_DELETED', 'review_id': review_id, 'restaurant_id': restaurant_id}}
+            {
+                'type': 'review_deleted', 
+                'message': {
+                    'type': 'REVIEW_DELETED', 
+                    'review_id': review_data['id'], 
+                    'restaurant_id': restaurant_id
+                }
+            }
         )
 
         return Response({'message': 'Review deleted.'}, status=status.HTTP_200_OK)
